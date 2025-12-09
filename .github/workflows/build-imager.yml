@@ -1,0 +1,181 @@
+name: Build Palpable Imager
+
+on:
+  push:
+    tags:
+      - 'imager-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 1.0.0)'
+        required: true
+        default: '1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+            arch: x64
+          - os: macos-latest
+            platform: mac
+            arch: arm64
+          - os: windows-latest
+            platform: win
+            arch: x64
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: palpable-imager
+        run: npm install
+
+      - name: Build for macOS (Intel)
+        if: matrix.platform == 'mac' && matrix.arch == 'x64'
+        working-directory: palpable-imager
+        run: npm run build:mac -- --x64 --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Build for macOS (Apple Silicon)
+        if: matrix.platform == 'mac' && matrix.arch == 'arm64'
+        working-directory: palpable-imager
+        run: npm run build:mac -- --arm64 --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Build for Windows
+        if: matrix.platform == 'win'
+        working-directory: palpable-imager
+        run: npm run build:win -- --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build for Linux
+        if: matrix.platform == 'linux'
+        working-directory: palpable-imager
+        run: npm run build:linux -- --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload macOS x64 artifact
+        if: matrix.platform == 'mac' && matrix.arch == 'x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Palpable-Imager-macOS-x64
+          path: |
+            palpable-imager/dist/*.dmg
+            palpable-imager/dist/*.dmg.blockmap
+            palpable-imager/dist/*.zip
+            palpable-imager/dist/latest-mac.yml
+
+      - name: Upload macOS arm64 artifact
+        if: matrix.platform == 'mac' && matrix.arch == 'arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Palpable-Imager-macOS-arm64
+          path: |
+            palpable-imager/dist/*.dmg
+            palpable-imager/dist/*.dmg.blockmap
+            palpable-imager/dist/*.zip
+
+      - name: Upload Windows artifact
+        if: matrix.platform == 'win'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Palpable-Imager-Windows
+          path: |
+            palpable-imager/dist/*.exe
+            palpable-imager/dist/*.exe.blockmap
+            palpable-imager/dist/latest.yml
+
+      - name: Upload Linux artifact
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Palpable-Imager-Linux
+          path: |
+            palpable-imager/dist/*.AppImage
+            palpable-imager/dist/latest-linux.yml
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Palpable Imager ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.dmg.blockmap
+            artifacts/**/*.zip
+            artifacts/**/*.exe
+            artifacts/**/*.exe.blockmap
+            artifacts/**/*.AppImage
+            artifacts/**/*.yml
+          body: |
+            ## Palpable Imager ${{ github.ref_name }}
+            
+            Flash Palpable OS to your SD card with one click.
+            
+            ### Downloads
+            
+            | Platform | File |
+            |----------|------|
+            | macOS (Apple Silicon) | `Palpable-Imager-arm64.dmg` |
+            | macOS (Intel) | `Palpable-Imager-x64.dmg` |
+            | Windows | `Palpable-Imager-Setup.exe` |
+            | Linux | `Palpable-Imager-1.0.0.AppImage` |
+            
+            ### What's New
+            
+            - See [CHANGELOG](https://github.com/paultnylund/palpable/blob/main/palpable-imager/CHANGELOG.md)
+            
+            ### Installation
+            
+            **macOS**: Open the DMG and drag Palpable Imager to Applications.
+            
+            **Windows**: Run the Setup.exe installer.
+            
+            **Linux**: Make the AppImage executable and run it:
+            ```bash
+            chmod +x Palpable-Imager.AppImage
+            ./Palpable-Imager.AppImage
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>Palpable Imager</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Titlebar (macOS) -->
+    <div class="titlebar">
+      <div class="titlebar-drag"></div>
+      <span class="title">Palpable Imager</span>
+    </div>
+
+    <!-- Main Content -->
+    <main class="content">
+      <!-- Auth Screen -->
+      <section id="auth-screen" class="screen active">
+        <div class="logo">
+          <svg width="80" height="80" viewBox="0 0 100 100" fill="none">
+            <circle cx="50" cy="50" r="45" stroke="#22c55e" stroke-width="4"/>
+            <circle cx="50" cy="50" r="20" fill="#22c55e"/>
+          </svg>
+        </div>
+        <h1>Palpable Imager</h1>
+        <p class="subtitle">Flash Palpable OS to your SD card in one click</p>
+        
+        <!-- Browser Auth (Primary) -->
+        <button id="auth-btn" class="btn btn-primary btn-large">
+          Sign in with Palpable
+        </button>
+        <p class="hint">Your browser will open to complete sign-in</p>
+        
+        <div class="auth-divider">
+          <span>or</span>
+        </div>
+        
+        <!-- Pairing Code Auth (Alternative) -->
+        <div id="pairing-auth" class="pairing-auth">
+          <p class="pairing-auth-label">Already have a pairing code?</p>
+          <div class="pairing-input-group">
+            <input type="text" id="pairing-code-input" placeholder="Enter 6-digit code" maxlength="6" class="input-code">
+            <button id="pairing-auth-btn" class="btn btn-secondary" disabled>
+              Connect
+            </button>
+          </div>
+          <p id="pairing-error" class="pairing-error hidden"></p>
+        </div>
+      </section>
+
+      <!-- Main Screen (after auth) -->
+      <section id="main-screen" class="screen">
+        <!-- Progress indicator -->
+        <div class="wizard-progress">
+          <div class="progress-step active" data-step="1">
+            <div class="progress-circle">1</div>
+            <div class="progress-label">Device</div>
+          </div>
+          <div class="progress-line"></div>
+          <div class="progress-step" data-step="2">
+            <div class="progress-circle">2</div>
+            <div class="progress-label">SD Card</div>
+          </div>
+          <div class="progress-line"></div>
+          <div class="progress-step" data-step="3">
+            <div class="progress-circle">3</div>
+            <div class="progress-label">Flash</div>
+          </div>
+        </div>
+
+        <!-- Wizard container -->
+        <div class="wizard-container">
+          <!-- Step 1: Device Selection/Name -->
+          <div class="wizard-step active" id="step-name" data-step="1">
+            <h2>Name Your Device</h2>
+            <p class="step-description">Choose a name for your device or select an existing one to re-flash</p>
+          <div id="device-selector" class="device-selector">
+            <label class="device-option-label">
+              <input type="radio" name="device-mode" value="existing" id="device-mode-existing">
+              <span>Re-flash existing device</span>
+            </label>
+            <div id="existing-device-container" style="display: none; margin-top: 8px;">
+              <select id="existing-device-select" class="input-large">
+                <option value="">Loading devices...</option>
+              </select>
+              <div id="device-actions" class="device-actions" style="display: none; margin-top: 8px;">
+                <button id="edit-device-btn" class="btn btn-secondary btn-small">Edit</button>
+                <button id="delete-device-btn" class="btn btn-secondary btn-small btn-danger">Delete</button>
+              </div>
+            </div>
+            
+            <label class="device-option-label" style="margin-top: 12px;">
+              <input type="radio" name="device-mode" value="new" id="device-mode-new" checked>
+              <span>Create new device</span>
+            </label>
+            <input type="text" id="device-name" placeholder="e.g., Living Room, Kitchen" class="input-large" style="margin-top: 8px;">
+          </div>
+          
+          <!-- Edit Device Modal -->
+          <div id="edit-device-modal" class="modal" style="display: none;">
+            <div class="modal-content">
+              <h3>Edit Device</h3>
+              <input type="text" id="edit-device-name" placeholder="Device name" class="input-large" style="margin-top: 12px;">
+              <div class="modal-actions" style="margin-top: 16px; display: flex; gap: 8px; justify-content: flex-end;">
+                <button id="cancel-edit-btn" class="btn btn-secondary btn-small">Cancel</button>
+                <button id="save-edit-btn" class="btn btn-primary btn-small">Save</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Navigation -->
+          <div class="wizard-nav">
+            <button id="step1-next" class="btn btn-primary">Next</button>
+          </div>
+        </div>
+
+        <!-- Step 2: Select Drive -->
+        <div class="wizard-step" id="step-drive" data-step="2">
+          <h2>Select SD Card</h2>
+          <p class="step-description">Choose the SD card you want to flash</p>
+
+          <div id="drives-list" class="drives-list">
+            <div class="loading">Scanning for drives...</div>
+          </div>
+
+          <button id="refresh-drives" class="btn btn-link btn-small" style="margin-top: 12px;">
+            ↻ Refresh Drives
+          </button>
+
+          <!-- Navigation -->
+          <div class="wizard-nav">
+            <button id="step2-back" class="btn btn-secondary back-btn">Back</button>
+            <button id="step2-next" class="btn btn-primary primary-btn">Next</button>
+          </div>
+        </div>
+
+        <!-- Step 3: Flash -->
+        <div class="wizard-step" id="step-flash" data-step="3">
+          <h2>Ready to Flash</h2>
+          <p class="step-description">Click the button below to start flashing Palpable OS to your SD card</p>
+
+          <div class="flash-summary">
+            <div class="summary-item">
+              <span class="summary-label">Device:</span>
+              <span id="summary-device" class="summary-value">-</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-label">SD Card:</span>
+              <span id="summary-drive" class="summary-value">-</span>
+            </div>
+          </div>
+
+          <button id="flash-btn" class="btn btn-primary btn-large primary-btn" disabled>
+            Flash Palpable OS
+          </button>
+
+          <!-- Navigation -->
+          <div class="wizard-nav">
+            <button id="step3-back" class="btn btn-secondary back-btn">Back</button>
+          </div>
+        </div>
+        </div>
+
+        <!-- Progress -->
+        <div id="progress-container" class="progress-container hidden">
+          <div class="progress-bar">
+            <div id="progress-fill" class="progress-fill"></div>
+          </div>
+          <p id="progress-status" class="progress-status">Preparing...</p>
+        </div>
+      </section>
+
+      <!-- Success Screen -->
+      <section id="success-screen" class="screen">
+        <div class="success-icon">✓</div>
+        <h1>Flash Complete!</h1>
+        <p class="subtitle">Your SD card is ready</p>
+        
+        <div class="pairing-info">
+          <p>Your Pairing Code</p>
+          <div id="pairing-code" class="pairing-code">------</div>
+          <p class="pairing-hint">Save this code to connect this device to your account</p>
+        </div>
+
+        <div class="next-steps">
+          <h3>Next Steps:</h3>
+          <ol>
+            <li>Insert SD card into your Raspberry Pi</li>
+            <li>Power on and wait ~2 minutes</li>
+            <li>Connect to WiFi: <strong>Palpable-Setup</strong></li>
+            <li>Enter your pairing code to link your device</li>
+          </ol>
+        </div>
+
+        <button id="flash-another" class="btn btn-secondary">Flash Another Device</button>
+      </section>
+    </main>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
+

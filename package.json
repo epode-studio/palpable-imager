@@ -1,0 +1,81 @@
+{
+  "name": "palpable-imager",
+  "version": "1.0.17",
+  "description": "Flash Palpable OS to SD cards with one click",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux",
+    "dist": "electron-builder --mac --win --linux"
+  },
+  "build": {
+    "appId": "app.palpable.imager",
+    "productName": "Palpable Imager",
+    "copyright": "Copyright © 2024 Palpable",
+    "publish": {
+      "provider": "github",
+      "owner": "epode-studio",
+      "repo": "palpable-imager"
+    },
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "afterSign": "scripts/afterSign.js",
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility",
+      "maintainer": "hello@palpable.app"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "node_modules/**/*"
+    ],
+    "protocols": {
+      "name": "Palpable Imager",
+      "schemes": [
+        "palpable-imager"
+      ]
+    }
+  },
+  "dependencies": {
+    "drivelist": "^11.2.2",
+    "electron-store": "^8.1.0",
+    "electron-updater": "^6.1.7",
+    "got": "^11.8.6",
+    "lzma-native": "^8.0.6",
+    "node-stream-zip": "^1.15.0",
+    "sudo-prompt": "^9.2.1"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "author": {
+    "name": "Palpable",
+    "email": "hello@palpable.app"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/epode-studio/palpable-imager"
+  }
+}
