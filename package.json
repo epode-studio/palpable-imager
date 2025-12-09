@@ -1,6 +1,6 @@
 {
   "name": "palpable-imager",
-  "version": "1.0.18",
+  "version": "1.0.19",
   "description": "Flash Palpable OS to SD cards with one click",
   "main": "src/main.js",
   "scripts": {
@@ -14,7 +14,7 @@
   },
   "build": {
     "appId": "app.palpable.imager",
-    "productName": "Palpable Imager",
+    "productName": "Palpable-Imager",
     "copyright": "Copyright © 2024 Palpable",
     "publish": {
       "provider": "github",
