@@ -45,12 +45,10 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        working-directory: palpable-imager
         run: npm install
 
       - name: Build for macOS (Intel)
         if: matrix.platform == 'mac' && matrix.arch == 'x64'
-        working-directory: palpable-imager
         run: npm run build:mac -- --x64 --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -58,7 +56,6 @@ jobs:
 
       - name: Build for macOS (Apple Silicon)
         if: matrix.platform == 'mac' && matrix.arch == 'arm64'
-        working-directory: palpable-imager
         run: npm run build:mac -- --arm64 --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -66,14 +63,12 @@ jobs:
 
       - name: Build for Windows
         if: matrix.platform == 'win'
-        working-directory: palpable-imager
         run: npm run build:win -- --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build for Linux
         if: matrix.platform == 'linux'
-        working-directory: palpable-imager
         run: npm run build:linux -- --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -84,10 +79,10 @@ jobs:
         with:
           name: Palpable-Imager-macOS-x64
           path: |
-            palpable-imager/dist/*.dmg
-            palpable-imager/dist/*.dmg.blockmap
-            palpable-imager/dist/*.zip
-            palpable-imager/dist/latest-mac.yml
+            dist/*.dmg
+            dist/*.dmg.blockmap
+            dist/*.zip
+            dist/latest-mac.yml
 
       - name: Upload macOS arm64 artifact
         if: matrix.platform == 'mac' && matrix.arch == 'arm64'
@@ -95,9 +90,9 @@ jobs:
         with:
           name: Palpable-Imager-macOS-arm64
           path: |
-            palpable-imager/dist/*.dmg
-            palpable-imager/dist/*.dmg.blockmap
-            palpable-imager/dist/*.zip
+            dist/*.dmg
+            dist/*.dmg.blockmap
+            dist/*.zip
 
       - name: Upload Windows artifact
         if: matrix.platform == 'win'
@@ -105,9 +100,9 @@ jobs:
         with:
           name: Palpable-Imager-Windows
           path: |
-            palpable-imager/dist/*.exe
-            palpable-imager/dist/*.exe.blockmap
-            palpable-imager/dist/latest.yml
+            dist/*.exe
+            dist/*.exe.blockmap
+            dist/latest.yml
 
       - name: Upload Linux artifact
         if: matrix.platform == 'linux'
@@ -115,8 +110,8 @@ jobs:
         with:
           name: Palpable-Imager-Linux
           path: |
-            palpable-imager/dist/*.AppImage
-            palpable-imager/dist/latest-linux.yml
+            dist/*.AppImage
+            dist/latest-linux.yml
 
   release:
     needs: build
@@ -162,8 +157,8 @@ jobs:
             | Linux | `Palpable-Imager-1.0.0.AppImage` |
             
             ### What's New
-            
-            - See [CHANGELOG](https://github.com/paultnylund/palpable/blob/main/palpable-imager/CHANGELOG.md)
+
+            - Initial release in standalone repository
             
             ### Installation
             
