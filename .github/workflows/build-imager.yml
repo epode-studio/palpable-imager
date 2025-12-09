@@ -3,7 +3,7 @@ name: Build Palpable Imager
 on:
   push:
     tags:
-      - 'imager-v*'
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
