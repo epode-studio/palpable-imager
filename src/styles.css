@@ -798,6 +798,20 @@ body {
   font-weight: 500;
 }
 
+/* Update Modal */
+.update-modal-description {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+#update-progress-status {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-top: 8px;
+}
+
 /* Responsive */
 @media (max-height: 600px) {
   .content {

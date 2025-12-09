@@ -198,6 +198,34 @@
         <button id="flash-another" class="btn btn-secondary">Flash Another Device</button>
       </section>
     </main>
+
+    <!-- Update Download Modal -->
+    <div id="update-modal" class="modal" style="display: none;">
+      <div class="modal-content">
+        <h3>Downloading Update</h3>
+        <p class="update-modal-description">Downloading Palpable Imager update...</p>
+        <div class="progress-bar" style="margin-top: 16px;">
+          <div id="update-progress-fill" class="progress-fill" style="width: 0%;"></div>
+        </div>
+        <p id="update-progress-status" class="progress-status" style="margin-top: 12px;">0%</p>
+        <div class="modal-actions" style="margin-top: 20px; display: flex; gap: 8px; justify-content: flex-end;">
+          <button id="update-modal-cancel" class="btn btn-secondary btn-small" style="display: none;">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Update Ready Modal -->
+    <div id="update-ready-modal" class="modal" style="display: none;">
+      <div class="modal-content">
+        <h3>Update Ready</h3>
+        <p class="update-modal-description">Palpable Imager <span id="update-ready-version"></span> has been downloaded and is ready to install.</p>
+        <p class="update-modal-description" style="margin-top: 8px; color: var(--text-muted); font-size: 13px;">Restart now to install the update.</p>
+        <div class="modal-actions" style="margin-top: 20px; display: flex; gap: 8px; justify-content: flex-end;">
+          <button id="update-restart-later" class="btn btn-secondary btn-small">Later</button>
+          <button id="update-restart-now" class="btn btn-primary btn-small">Restart Now</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="renderer.js"></script>

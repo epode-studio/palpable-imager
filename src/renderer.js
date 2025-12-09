@@ -130,7 +130,39 @@ function setupEventListeners() {
   // Update listeners (from menu)
   window.palpable.onUpdateAvailable((data) => {
     console.log('Update available:', data.version)
+    showUpdateDownloadModal()
   })
+
+  window.palpable.onUpdateDownloadProgress((data) => {
+    // Show modal if it's not already shown (in case progress comes before available event)
+    const updateModal = document.getElementById('update-modal')
+    if (updateModal && updateModal.style.display === 'none') {
+      showUpdateDownloadModal()
+    }
+    updateUpdateDownloadProgress(data.percent)
+  })
+
+  window.palpable.onUpdateDownloaded((data) => {
+    hideUpdateDownloadModal()
+    showUpdateReadyModal(data.version)
+  })
+
+  window.palpable.onUpdateError((data) => {
+    hideUpdateDownloadModal()
+    alert(`Update error: ${data.message}`)
+  })
+
+  // Update modal buttons
+  const updateRestartNowBtn = document.getElementById('update-restart-now')
+  const updateRestartLaterBtn = document.getElementById('update-restart-later')
+  
+  if (updateRestartNowBtn) {
+    updateRestartNowBtn.addEventListener('click', handleUpdateRestart)
+  }
+  
+  if (updateRestartLaterBtn) {
+    updateRestartLaterBtn.addEventListener('click', hideUpdateReadyModal)
+  }
 }
 
 // Screen Management
@@ -787,6 +819,70 @@ function formatBytes(bytes) {
   if (gb >= 1) return `${gb.toFixed(1)} GB`
   const mb = bytes / (1024 * 1024)
   return `${mb.toFixed(0)} MB`
+}
+
+// Update Modal Functions
+function showUpdateDownloadModal() {
+  const modal = document.getElementById('update-modal')
+  if (modal) {
+    modal.style.display = 'flex'
+    const progressFill = document.getElementById('update-progress-fill')
+    const progressStatus = document.getElementById('update-progress-status')
+    if (progressFill) progressFill.style.width = '0%'
+    if (progressStatus) progressStatus.textContent = '0%'
+  }
+}
+
+function hideUpdateDownloadModal() {
+  const modal = document.getElementById('update-modal')
+  if (modal) {
+    modal.style.display = 'none'
+  }
+}
+
+function updateUpdateDownloadProgress(percent) {
+  const progressFill = document.getElementById('update-progress-fill')
+  const progressStatus = document.getElementById('update-progress-status')
+  if (progressFill) {
+    progressFill.style.width = `${percent}%`
+  }
+  if (progressStatus) {
+    progressStatus.textContent = `${percent}%`
+  }
+}
+
+function showUpdateReadyModal(version) {
+  const modal = document.getElementById('update-ready-modal')
+  const versionEl = document.getElementById('update-ready-version')
+  if (modal) {
+    modal.style.display = 'flex'
+  }
+  if (versionEl && version) {
+    versionEl.textContent = version
+  }
+}
+
+function hideUpdateReadyModal() {
+  const modal = document.getElementById('update-ready-modal')
+  if (modal) {
+    modal.style.display = 'none'
+  }
+}
+
+async function handleUpdateRestart() {
+  const btn = document.getElementById('update-restart-now')
+  if (btn) {
+    btn.disabled = true
+    btn.textContent = 'Restarting...'
+  }
+  
+  // Call IPC to restart and install
+  if (window.palpable.restartAndInstall) {
+    await window.palpable.restartAndInstall()
+  } else {
+    // Fallback: just hide modal if IPC not available
+    hideUpdateReadyModal()
+  }
 }
 
 // Start

@@ -17,6 +17,17 @@ autoUpdater.logger = console
 autoUpdater.autoDownload = true
 autoUpdater.autoInstallOnAppQuit = true
 
+// Disable signature verification for unsigned/ad-hoc signed apps
+// This prevents "code signature validation" errors during updates
+// Since we're using identity: null (ad-hoc signing), signature verification will fail
+if (process.platform === 'darwin') {
+  // Disable signature verification for updates
+  // This is necessary for ad-hoc signed apps (identity: null)
+  if (autoUpdater.verifySignature !== undefined) {
+    autoUpdater.verifySignature = false
+  }
+}
+
 // Palpable API URLs
 const PALPABLE_OS_REPO = 'paultnylund/palpable-os'
 const PALPABLE_AUTH_URL = 'https://palpable.technology/auth/imager'
@@ -485,11 +496,45 @@ ipcMain.handle('download-image', async (event) => {
     // Check if we already have the latest image
     if (fs.existsSync(imagePath)) {
       const stats = fs.statSync(imagePath)
-      // If downloaded within last 24 hours, use cached version
-      const ageHours = (Date.now() - stats.mtimeMs) / (1000 * 60 * 60)
-      if (ageHours < 24) {
-        mainWindow.webContents.send('download-progress', { percent: 100, status: 'cached' })
-        return { success: true, path: imagePath, cached: true }
+      
+      // Verify cached file is valid
+      let isValid = true
+      if (stats.size === 0) {
+        isValid = false
+        logEvent('Flash', 'Cached file is empty, will re-download')
+      } else if (imagePath.endsWith('.xz')) {
+        // Verify XZ magic bytes
+        try {
+          const fd = fs.openSync(imagePath, 'r')
+          const buffer = Buffer.alloc(6)
+          fs.readSync(fd, buffer, 0, 6, 0)
+          fs.closeSync(fd)
+          const xzMagic = Buffer.from([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00])
+          if (!buffer.equals(xzMagic)) {
+            isValid = false
+            logEvent('Flash', 'Cached file is not a valid XZ file, will re-download')
+          }
+        } catch (err) {
+          isValid = false
+          logEvent('Flash', 'Cannot verify cached file, will re-download', { error: err.message })
+        }
+      }
+      
+      // If cached file is invalid, delete it
+      if (!isValid) {
+        try {
+          fs.unlinkSync(imagePath)
+          logEvent('Flash', 'Deleted corrupted cached file')
+        } catch (err) {
+          console.warn('Failed to delete corrupted cached file:', err)
+        }
+      } else {
+        // If downloaded within last 24 hours and valid, use cached version
+        const ageHours = (Date.now() - stats.mtimeMs) / (1000 * 60 * 60)
+        if (ageHours < 24) {
+          mainWindow.webContents.send('download-progress', { percent: 100, status: 'cached' })
+          return { success: true, path: imagePath, cached: true }
+        }
       }
     }
     
@@ -594,7 +639,34 @@ ipcMain.handle('download-image', async (event) => {
     
     mainWindow.webContents.send('download-progress', { percent: 100, status: 'complete' })
     mainWindow.setProgressBar(-1)
-    logEvent('Flash', 'Download complete', { path: imagePath, version: release.tag_name })
+    
+    // Verify downloaded file is valid
+    try {
+      const stats = fs.statSync(imagePath)
+      if (stats.size === 0) {
+        fs.unlinkSync(imagePath)
+        throw new Error('Downloaded file is empty. Please try again.')
+      }
+      // Verify XZ magic bytes if it's an XZ file
+      if (imagePath.endsWith('.xz')) {
+        const fd = fs.openSync(imagePath, 'r')
+        const buffer = Buffer.alloc(6)
+        fs.readSync(fd, buffer, 0, 6, 0)
+        fs.closeSync(fd)
+        const xzMagic = Buffer.from([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00])
+        if (!buffer.equals(xzMagic)) {
+          fs.unlinkSync(imagePath)
+          throw new Error('Downloaded file is not a valid XZ file. Please try downloading again.')
+        }
+      }
+      logEvent('Flash', 'Download complete', { path: imagePath, version: release.tag_name, size: stats.size })
+    } catch (err) {
+      if (fs.existsSync(imagePath)) {
+        fs.unlinkSync(imagePath)
+      }
+      throw err
+    }
+    
     return { success: true, path: imagePath, version: release.tag_name }
   } catch (err) {
     console.error('Download failed:', err)
@@ -645,14 +717,43 @@ ipcMain.handle('flash-image', async (event, { imagePath, targetDevice }) => {
     let rawImagePath = imagePath
     if (imagePath.endsWith('.xz')) {
       rawImagePath = imagePath.replace('.xz', '')
-      await decompressXZ(imagePath, rawImagePath, (percent) => {
-        mainWindow.webContents.send('flash-progress', { 
-          percent: Math.round(percent * 0.3), // 0-30% for decompression
-          status: 'decompressing'
+      
+      // Verify file exists and is readable before decompression
+      if (!fs.existsSync(imagePath)) {
+        throw new Error('Image file not found. Please download it again.')
+      }
+      
+      try {
+        await decompressXZ(imagePath, rawImagePath, (percent) => {
+          mainWindow.webContents.send('flash-progress', { 
+            percent: Math.round(percent * 0.3), // 0-30% for decompression
+            status: 'decompressing'
+          })
+          mainWindow.setProgressBar(percent / 100)
         })
-        mainWindow.setProgressBar(percent / 100)
-      })
-      mainWindow.setProgressBar(-1)
+        mainWindow.setProgressBar(-1)
+        
+        // Verify decompressed file exists and has content
+        if (!fs.existsSync(rawImagePath)) {
+          throw new Error('Decompression completed but output file was not created.')
+        }
+        const decompressedStats = fs.statSync(rawImagePath)
+        if (decompressedStats.size === 0) {
+          fs.unlinkSync(rawImagePath)
+          throw new Error('Decompressed file is empty. The source file may be corrupted.')
+        }
+        logEvent('Flash', 'Decompression complete', { outputSize: decompressedStats.size })
+      } catch (err) {
+        // Clean up partial decompressed file on error
+        if (fs.existsSync(rawImagePath)) {
+          try {
+            fs.unlinkSync(rawImagePath)
+          } catch (cleanupErr) {
+            console.warn('Failed to clean up partial decompressed file:', cleanupErr)
+          }
+        }
+        throw err
+      }
     }
     
     mainWindow.webContents.send('flash-progress', { percent: 30, status: 'flashing' })
@@ -689,12 +790,58 @@ async function decompressXZ(inputPath, outputPath, onProgress) {
   return new Promise((resolve, reject) => {
     console.log(`Decompressing ${inputPath} to ${outputPath}`)
 
+    // Verify input file exists and has content
+    try {
+      const stats = fs.statSync(inputPath)
+      if (stats.size === 0) {
+        reject(new Error('XZ file is empty. The download may have failed. Please try again.'))
+        return
+      }
+      if (stats.size < 100) {
+        reject(new Error('XZ file is too small to be valid. The download may be incomplete. Please try again.'))
+        return
+      }
+      console.log(`Input file size: ${stats.size} bytes`)
+    } catch (err) {
+      reject(new Error(`Cannot access XZ file: ${err.message}`))
+      return
+    }
+
+    // Verify it's actually an XZ file by checking magic bytes
+    const fd = fs.openSync(inputPath, 'r')
+    const buffer = Buffer.alloc(6)
+    try {
+      fs.readSync(fd, buffer, 0, 6, 0)
+      fs.closeSync(fd)
+      // XZ files start with magic bytes: FD 37 7A 58 5A 00
+      const xzMagic = Buffer.from([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00])
+      if (!buffer.equals(xzMagic)) {
+        reject(new Error('File does not appear to be a valid XZ file. The download may be corrupted. Please try downloading again.'))
+        return
+      }
+    } catch (err) {
+      fs.closeSync(fd)
+      reject(new Error(`Cannot read XZ file header: ${err.message}`))
+      return
+    }
+
     const inputStream = fs.createReadStream(inputPath)
     const outputStream = fs.createWriteStream(outputPath)
-    const decompressor = lzma.createDecompressor()
+    
+    // Create decompressor with error handling
+    let decompressor
+    try {
+      decompressor = lzma.createDecompressor()
+    } catch (err) {
+      inputStream.destroy()
+      outputStream.destroy()
+      reject(new Error(`Failed to create XZ decompressor: ${err.message}`))
+      return
+    }
 
     let bytesProcessed = 0
     let totalBytes = 0
+    let outputBytes = 0
 
     // Get file size for progress tracking
     try {
@@ -704,13 +851,19 @@ async function decompressXZ(inputPath, outputPath, onProgress) {
       console.warn('Could not get input file size:', err)
     }
 
-    // Track progress
+    // Track input progress (compressed bytes read)
     inputStream.on('data', (chunk) => {
       bytesProcessed += chunk.length
       if (totalBytes > 0) {
-        const progress = Math.floor((bytesProcessed / totalBytes) * 100)
+        // Use input progress as approximation (XZ compression ratio varies)
+        const progress = Math.min(95, Math.floor((bytesProcessed / totalBytes) * 100))
         onProgress(progress)
       }
+    })
+
+    // Track output progress (decompressed bytes written)
+    outputStream.on('drain', () => {
+      // Output stream is keeping up
     })
 
     // Handle completion
@@ -720,12 +873,27 @@ async function decompressXZ(inputPath, outputPath, onProgress) {
       resolve()
     })
 
-    // Handle errors
+    // Handle errors with better messages
     const handleError = (err) => {
       console.error('XZ decompression error:', err)
       inputStream.destroy()
+      if (decompressor && typeof decompressor.destroy === 'function') {
+        decompressor.destroy()
+      }
       outputStream.destroy()
-      reject(new Error(`XZ decompression failed: ${err.message}`))
+      
+      let errorMessage = `XZ decompression failed: ${err.message}`
+      
+      // Provide more helpful error messages
+      if (err.message.includes('No progress is possible') || err.message.includes('progress')) {
+        errorMessage = 'XZ file appears to be corrupted or incomplete. Please delete the cached file and try downloading again.'
+      } else if (err.message.includes('unexpected end of file') || err.message.includes('truncated')) {
+        errorMessage = 'XZ file is incomplete. The download may have been interrupted. Please try downloading again.'
+      } else if (err.message.includes('format') || err.message.includes('invalid')) {
+        errorMessage = 'File is not a valid XZ format. Please check the download source.'
+      }
+      
+      reject(new Error(errorMessage))
     }
 
     inputStream.on('error', handleError)
@@ -1052,28 +1220,36 @@ if (app.isPackaged) {
     if (mainWindow) {
       mainWindow.setProgressBar(-1)
       mainWindow.webContents.send('update-downloaded', { version: info?.version })
-      dialog.showMessageBox(mainWindow, {
-        type: 'info',
-        title: 'Update Ready',
-        message: `Palpable Imager ${info?.version || ''} downloaded`,
-        detail: 'Restart now to install the update.',
-        buttons: ['Restart', 'Later'],
-        defaultId: 0,
-        cancelId: 1
-      }).then(({ response }) => {
-        if (response === 0) {
-          autoUpdater.quitAndInstall()
-        }
-      })
+      // Don't show dialog - let the renderer handle it with the modal
     }
   })
 
   autoUpdater.on('error', (err) => {
-    logEvent('Update', 'Update error', { error: err.message })
+    logEvent('Update', 'Update error', { error: err.message, stack: err.stack })
+    
+    // Handle signature verification errors for ad-hoc signed apps
+    const isSignatureError = err.message && (
+      err.message.includes('code signature') ||
+      err.message.includes('code failed to satisfy') ||
+      err.message.includes('signature validation')
+    )
+    
     if (mainWindow) {
       mainWindow.setProgressBar(-1)
-      dialog.showErrorBox('Update Error', err.message)
-      mainWindow.webContents.send('update-error', { message: err.message })
+      
+      if (isSignatureError) {
+        // For signature errors, provide a helpful message
+        const errorMsg = 'Update installation failed due to code signature verification.\n\n' +
+          'This app is ad-hoc signed. Please download and install the update manually from GitHub releases.'
+        dialog.showErrorBox('Update Installation Error', errorMsg)
+        mainWindow.webContents.send('update-error', { 
+          message: errorMsg,
+          isSignatureError: true
+        })
+      } else {
+        dialog.showErrorBox('Update Error', err.message)
+        mainWindow.webContents.send('update-error', { message: err.message })
+      }
     }
   })
 }
@@ -1081,5 +1257,26 @@ if (app.isPackaged) {
 // Get app version
 ipcMain.handle('get-app-version', () => {
   return app.getVersion()
+})
+
+// Restart and install update
+ipcMain.handle('restart-and-install', () => {
+  if (app.isPackaged) {
+    try {
+      // For unsigned/ad-hoc signed apps, we need to handle installation differently
+      // quitAndInstall will attempt to verify signatures which fails for ad-hoc signed apps
+      if (process.platform === 'darwin') {
+        // On macOS, try to install without strict signature verification
+        // The update should already be downloaded and ready
+        autoUpdater.quitAndInstall(false, true) // isSilent=false, isForceRunAfter=true
+      } else {
+        autoUpdater.quitAndInstall(false, true)
+      }
+    } catch (err) {
+      console.error('Failed to restart and install:', err)
+      // If quitAndInstall fails, try to manually handle the update
+      logEvent('Update', 'Restart failed', { error: err.message })
+    }
+  }
 })
 

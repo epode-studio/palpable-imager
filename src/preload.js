@@ -64,6 +64,7 @@ contextBridge.exposeInMainWorld('palpable', {
   onUpdateNotAvailable: (callback) => {
     ipcRenderer.on('update-not-available', (event, data) => callback(data))
   },
+  restartAndInstall: () => ipcRenderer.invoke('restart-and-install'),
 
   // Platform info
   platform: process.platform,
