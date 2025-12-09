@@ -680,7 +680,9 @@ async function handleFlash() {
 function updateDownloadProgress({ percent, status }) {
   progressFill.style.width = `${10 + percent * 0.3}%` // 10-40% for download
   
-  if (status === 'downloading') {
+  if (status === 'checking') {
+    progressStatus.textContent = 'Checking for latest Palpable OS release...'
+  } else if (status === 'downloading') {
     progressStatus.textContent = `Downloading Palpable OS... ${percent}%`
   } else if (status === 'cached') {
     progressStatus.textContent = 'Using cached Palpable OS image...'

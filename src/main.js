@@ -18,7 +18,7 @@ autoUpdater.autoDownload = true
 autoUpdater.autoInstallOnAppQuit = true
 
 // Palpable API URLs
-const PALPABLE_OS_URL = 'https://palpable.technology/api/download/palpable-os'
+const PALPABLE_OS_REPO = 'paultnylund/palpable-os'
 const PALPABLE_AUTH_URL = 'https://palpable.technology/auth/imager'
 const PALPABLE_API_URL = 'https://palpable.technology/api'
 
@@ -475,7 +475,7 @@ const getDownloadPath = () => {
   return downloadDir
 }
 
-// Download Palpable OS image
+// Download Palpable OS image from GitHub releases
 ipcMain.handle('download-image', async (event) => {
   const downloadPath = getDownloadPath()
   const imagePath = path.join(downloadPath, 'palpable-os.img.xz')
@@ -493,21 +493,67 @@ ipcMain.handle('download-image', async (event) => {
       }
     }
     
-    // Download the image
-    const writeStream = fs.createWriteStream(imagePath)
-    const downloadStream = got.stream(PALPABLE_OS_URL)
+    // Step 1: Get the latest release from GitHub
+    mainWindow.webContents.send('download-progress', { percent: 0, status: 'checking' })
+    logEvent('Flash', 'Fetching latest release from GitHub', { repo: PALPABLE_OS_REPO })
     
-    let totalBytes = 0
+    const releaseResponse = await got.get(`https://api.github.com/repos/${PALPABLE_OS_REPO}/releases/latest`, {
+      responseType: 'json',
+      headers: {
+        'User-Agent': 'Palpable-Imager',
+        'Accept': 'application/vnd.github.v3+json'
+      }
+    })
+    
+    const release = releaseResponse.body
+    logEvent('Flash', 'Latest release found', { tag: release.tag_name, assets: release.assets.length })
+    
+    // Step 2: Find the image file in release assets
+    // Look for .img.xz file (compressed image)
+    const imageAsset = release.assets.find(asset => 
+      asset.name.endsWith('.img.xz') || asset.name.endsWith('.xz')
+    )
+    
+    if (!imageAsset) {
+      throw new Error(`No image file found in release ${release.tag_name}. Expected a .img.xz file.`)
+    }
+    
+    logEvent('Flash', 'Image asset found', { name: imageAsset.name, size: imageAsset.size, url: imageAsset.browser_download_url })
+    
+    // Step 3: Download the image file
+    mainWindow.webContents.send('download-progress', { percent: 5, status: 'downloading' })
+    
+    const writeStream = fs.createWriteStream(imagePath)
+    const downloadStream = got.stream(imageAsset.browser_download_url, {
+      headers: {
+        'User-Agent': 'Palpable-Imager',
+        'Accept': 'application/octet-stream'
+      }
+    })
+    
+    let totalBytes = imageAsset.size || 0
     let downloadedBytes = 0
     
     downloadStream.on('response', (response) => {
-      totalBytes = parseInt(response.headers['content-length'] || '0', 10)
-      logEvent('Flash', 'Download response', { totalBytes })
+      // Check status code
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        const error = new Error(`Download failed: Server returned ${response.statusCode} ${response.statusMessage || ''}`)
+        error.statusCode = response.statusCode
+        downloadStream.destroy()
+        writeStream.destroy()
+        downloadStream.emit('error', error)
+        return
+      }
+      // Use content-length from response if available, otherwise use asset size
+      if (response.headers['content-length']) {
+        totalBytes = parseInt(response.headers['content-length'], 10)
+      }
+      logEvent('Flash', 'Download response', { totalBytes, statusCode: response.statusCode })
     })
     
     downloadStream.on('downloadProgress', (progress) => {
       downloadedBytes = progress.transferred
-      const percent = totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0
+      const percent = totalBytes > 0 ? Math.round(5 + (downloadedBytes / totalBytes) * 95) : 0 // 5-100% for download
       mainWindow.webContents.send('download-progress', { 
         percent, 
         downloaded: downloadedBytes,
@@ -521,18 +567,56 @@ ipcMain.handle('download-image', async (event) => {
       downloadStream.pipe(writeStream)
       writeStream.on('finish', resolve)
       writeStream.on('error', reject)
-      downloadStream.on('error', reject)
+      downloadStream.on('error', (err) => {
+        // Provide better error messages for HTTP errors
+        if (err.response) {
+          const statusCode = err.response.statusCode
+          if (statusCode === 404) {
+            reject(new Error(`Palpable OS image not found in release. Please check the GitHub repository for available releases.`))
+          } else if (statusCode === 403) {
+            reject(new Error(`Rate limit exceeded. Please wait a moment and try again.`))
+          } else {
+            reject(new Error(`Download failed: Server returned ${statusCode} ${err.response.statusMessage || ''}`))
+          }
+        } else if (err.statusCode) {
+          if (err.statusCode === 404) {
+            reject(new Error(`Palpable OS image not found in release. Please check the GitHub repository for available releases.`))
+          } else if (err.statusCode === 403) {
+            reject(new Error(`Rate limit exceeded. Please wait a moment and try again.`))
+          } else {
+            reject(err)
+          }
+        } else {
+          reject(err)
+        }
+      })
     })
     
     mainWindow.webContents.send('download-progress', { percent: 100, status: 'complete' })
     mainWindow.setProgressBar(-1)
-    logEvent('Flash', 'Download complete', { path: imagePath })
-    return { success: true, path: imagePath }
+    logEvent('Flash', 'Download complete', { path: imagePath, version: release.tag_name })
+    return { success: true, path: imagePath, version: release.tag_name }
   } catch (err) {
     console.error('Download failed:', err)
     if (mainWindow) mainWindow.setProgressBar(-1)
-    logEvent('Flash', 'Download failed', { error: err.message })
-    return { success: false, error: err.message }
+    
+    // Extract better error message
+    let errorMessage = err.message
+    if (err.response) {
+      const statusCode = err.response.statusCode
+      if (statusCode === 404) {
+        errorMessage = `Palpable OS release not found. Please check if the repository exists and has releases available.`
+      } else if (statusCode === 403) {
+        errorMessage = `GitHub rate limit exceeded. Please wait a moment and try again.`
+      } else {
+        errorMessage = `Download failed: Server returned ${statusCode} ${err.response.statusMessage || ''}`
+      }
+    } else if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
+      errorMessage = `Cannot connect to GitHub. Please check your internet connection.`
+    }
+    
+    logEvent('Flash', 'Download failed', { error: errorMessage, originalError: err.message })
+    return { success: false, error: errorMessage }
   }
 })
 
