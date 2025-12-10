@@ -29,12 +29,13 @@ if (process.platform === 'darwin') {
 }
 
 // Palpable API URLs
-const PALPABLE_OS_REPO = 'paultnylund/palpable-os'
+const PALPABLE_OS_REPO = 'epode-studio/palpable-os'
 const PALPABLE_AUTH_URL = 'https://palpable.technology/auth/imager'
 const PALPABLE_API_URL = 'https://palpable.technology/api'
 
 let mainWindow = null
 let authWindow = null
+let downloadedUpdateInfo = null // Store update info for manual installation
 
 // Custom protocol for OAuth callback
 const PROTOCOL = 'palpable-imager'
@@ -554,16 +555,29 @@ ipcMain.handle('download-image', async (event) => {
     logEvent('Flash', 'Latest release found', { tag: release.tag_name, assets: release.assets.length })
     
     // Step 2: Find the image file in release assets
-    // Look for .img.xz file (compressed image)
-    const imageAsset = release.assets.find(asset => 
-      asset.name.endsWith('.img.xz') || asset.name.endsWith('.xz')
-    )
-    
+    // Look for .img.xz file (compressed image) - prefer .img.xz over just .xz
+    let imageAsset = release.assets.find(asset => asset.name.endsWith('.img.xz'))
     if (!imageAsset) {
-      throw new Error(`No image file found in release ${release.tag_name}. Expected a .img.xz file.`)
+      imageAsset = release.assets.find(asset => asset.name.endsWith('.xz'))
     }
     
-    logEvent('Flash', 'Image asset found', { name: imageAsset.name, size: imageAsset.size, url: imageAsset.browser_download_url })
+    if (!imageAsset) {
+      const availableAssets = release.assets.map(a => a.name).join(', ')
+      logEvent('Flash', 'No XZ image found', { availableAssets, releaseTag: release.tag_name })
+      throw new Error(`No XZ image file found in release ${release.tag_name}. Available files: ${availableAssets || 'none'}`)
+    }
+    
+    logEvent('Flash', 'Image asset found', { 
+      name: imageAsset.name, 
+      size: imageAsset.size, 
+      contentType: imageAsset.content_type,
+      url: imageAsset.browser_download_url 
+    })
+    
+    // Warn if file seems suspiciously small (might be corrupted)
+    if (imageAsset.size && imageAsset.size < 1000000) { // Less than 1MB
+      logEvent('Flash', 'Warning: Image file seems unusually small', { size: imageAsset.size })
+    }
     
     // Step 3: Download the image file
     mainWindow.webContents.send('download-progress', { percent: 5, status: 'downloading' })
@@ -643,10 +657,26 @@ ipcMain.handle('download-image', async (event) => {
     // Verify downloaded file is valid
     try {
       const stats = fs.statSync(imagePath)
+      logEvent('Flash', 'Downloaded file stats', { 
+        size: stats.size, 
+        expectedSize: imageAsset.size,
+        match: stats.size === imageAsset.size 
+      })
+      
       if (stats.size === 0) {
         fs.unlinkSync(imagePath)
-        throw new Error('Downloaded file is empty. Please try again.')
+        throw new Error('Downloaded file is empty. The file in the GitHub release may be corrupted. Please check the palpable-os repository.')
       }
+      
+      // Check if download size matches expected size (allow small differences for metadata)
+      if (imageAsset.size && Math.abs(stats.size - imageAsset.size) > 1000) {
+        logEvent('Flash', 'Warning: Downloaded size does not match expected size', {
+          downloaded: stats.size,
+          expected: imageAsset.size,
+          difference: Math.abs(stats.size - imageAsset.size)
+        })
+      }
+      
       // Verify XZ magic bytes if it's an XZ file
       if (imagePath.endsWith('.xz')) {
         const fd = fs.openSync(imagePath, 'r')
@@ -654,12 +684,16 @@ ipcMain.handle('download-image', async (event) => {
         fs.readSync(fd, buffer, 0, 6, 0)
         fs.closeSync(fd)
         const xzMagic = Buffer.from([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00])
+        const hexHeader = Array.from(buffer).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')
+        logEvent('Flash', 'XZ file header check', { header: hexHeader })
+        
         if (!buffer.equals(xzMagic)) {
           fs.unlinkSync(imagePath)
-          throw new Error('Downloaded file is not a valid XZ file. Please try downloading again.')
+          throw new Error(`Downloaded file is not a valid XZ file. File header: ${hexHeader}. The file in the GitHub release (${release.tag_name}) may be corrupted or in the wrong format. Please check the palpable-os repository: https://github.com/${PALPABLE_OS_REPO}/releases`)
         }
+        logEvent('Flash', 'XZ file header validated successfully')
       }
-      logEvent('Flash', 'Download complete', { path: imagePath, version: release.tag_name, size: stats.size })
+      logEvent('Flash', 'Download complete and validated', { path: imagePath, version: release.tag_name, size: stats.size })
     } catch (err) {
       if (fs.existsSync(imagePath)) {
         fs.unlinkSync(imagePath)
@@ -886,11 +920,11 @@ async function decompressXZ(inputPath, outputPath, onProgress) {
       
       // Provide more helpful error messages
       if (err.message.includes('No progress is possible') || err.message.includes('progress')) {
-        errorMessage = 'XZ file appears to be corrupted or incomplete. Please delete the cached file and try downloading again.'
+        errorMessage = `XZ file appears to be corrupted or incomplete. This may indicate the file in the palpable-os GitHub release is corrupted. Please check https://github.com/${PALPABLE_OS_REPO}/releases and verify the file is valid. You can also try deleting the cached file and downloading again.`
       } else if (err.message.includes('unexpected end of file') || err.message.includes('truncated')) {
-        errorMessage = 'XZ file is incomplete. The download may have been interrupted. Please try downloading again.'
+        errorMessage = `XZ file is incomplete. The download may have been interrupted, or the file in the palpable-os release may be corrupted. Please check https://github.com/${PALPABLE_OS_REPO}/releases and try downloading again.`
       } else if (err.message.includes('format') || err.message.includes('invalid')) {
-        errorMessage = 'File is not a valid XZ format. Please check the download source.'
+        errorMessage = `File is not a valid XZ format. The file in the palpable-os GitHub release may be in the wrong format. Please check https://github.com/${PALPABLE_OS_REPO}/releases`
       }
       
       reject(new Error(errorMessage))
@@ -908,20 +942,43 @@ async function decompressXZ(inputPath, outputPath, onProgress) {
 // Flash image with sudo
 async function flashWithSudo(imagePath, targetDevice, onProgress) {
   return new Promise((resolve, reject) => {
-    // Normalize device path to the disk (not partition) and use raw device on macOS
+    // Normalize device path to the disk (not partition)
     const platform = process.platform
     let device = targetDevice
     let command = ''
 
     if (platform === 'darwin') {
-      // Strip partition suffix (e.g., disk2s1 -> disk2) and prefer raw device for speed/reliability
+      // Strip partition suffix (e.g., disk2s1 -> disk2)
       device = device.replace(/s\d+$/, '')
-      const rawDevice = device.replace('/dev/disk', '/dev/rdisk')
-      command = `diskutil unmountDisk ${device} && dd if="${imagePath}" of=${rawDevice} bs=4m conv=sync status=progress`
+
+      // Use Apple Software Restore (asr) - native macOS tool
+      // More reliable and better integrated with macOS security
+      command = `diskutil unmountDisk ${device} && asr restore --source "${imagePath}" --target ${device} --erase --noprompt`
     } else if (platform === 'linux') {
       // Strip partition suffix (e.g., /dev/sdb1 -> /dev/sdb)
       device = device.replace(/p?\d+$/, '')
       command = `umount ${device}* 2>/dev/null; dd if="${imagePath}" of=${device} bs=4M status=progress conv=fsync`
+    } else if (platform === 'win32') {
+      // Windows: Use diskpart + dd for Windows
+      // Get disk number from device path (e.g., \\.\PhysicalDrive2 -> 2)
+      const diskNumber = device.match(/\d+$/)?.[0]
+      if (!diskNumber) {
+        reject(new Error('Invalid Windows disk device path'))
+        return
+      }
+
+      // Use PowerShell with raw disk writes
+      // Note: This requires admin privileges (handled by sudo-prompt)
+      const imagePath_escaped = imagePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+      command = `powershell -Command "& {` +
+        `$disk = Get-Disk -Number ${diskNumber}; ` +
+        `Clear-Disk -Number ${diskNumber} -RemoveData -RemoveOEM -Confirm:$false; ` +
+        `$stream = [System.IO.File]::OpenRead('${imagePath_escaped}'); ` +
+        `$device = [System.IO.File]::OpenWrite('\\\\\\\\.\\\\PhysicalDrive${diskNumber}'); ` +
+        `$buffer = New-Object byte[] 4194304; ` +
+        `while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) { ` +
+        `$device.Write($buffer, 0, $read); $device.Flush() }; ` +
+        `$device.Close(); $stream.Close() }"`
     } else {
       reject(new Error('Unsupported platform for flashing'))
       return
@@ -931,15 +988,53 @@ async function flashWithSudo(imagePath, targetDevice, onProgress) {
 
     sudo.exec(command, options, (error, stdout, stderr) => {
       if (error) {
-        const msg = stderr || stdout || error.message || 'Flash failed'
-        reject(new Error(msg))
+        const errorOutput = stderr || stdout || error.message || 'Flash failed'
+
+        // Detect permission errors and provide helpful guidance
+        if (errorOutput.includes('Operation not permitted') ||
+            errorOutput.includes('Permission denied') ||
+            errorOutput.includes('not authorized') ||
+            errorOutput.includes('Access is denied') ||
+            errorOutput.includes('UnauthorizedAccessException')) {
+
+          let permissionMessage = ''
+
+          if (platform === 'darwin') {
+            permissionMessage = 'Permission denied: Palpable Imager needs Full Disk Access to flash SD cards.\n\n' +
+              'To fix this:\n' +
+              '1. Open System Settings\n' +
+              '2. Go to Privacy & Security → Full Disk Access\n' +
+              '3. Click the lock icon and authenticate\n' +
+              '4. Click the + button and add Palpable Imager\n' +
+              '5. Restart Palpable Imager\n\n' +
+              'Then try flashing again.'
+          } else if (platform === 'win32') {
+            permissionMessage = 'Permission denied: Administrator privileges are required to flash SD cards.\n\n' +
+              'Please make sure you:\n' +
+              '1. Run Palpable Imager as Administrator (right-click → Run as Administrator)\n' +
+              '2. Accept the User Account Control (UAC) prompt when flashing\n\n' +
+              'Then try flashing again.'
+          } else {
+            permissionMessage = 'Permission denied: Root privileges are required to flash SD cards.\n\n' +
+              'Please make sure you accept the sudo password prompt when flashing.\n\n' +
+              'Then try flashing again.'
+          }
+
+          const permissionError = new Error(permissionMessage)
+          permissionError.code = 'PERMISSION_DENIED'
+          reject(permissionError)
+          return
+        }
+
+        // Other errors
+        reject(new Error(errorOutput))
       } else {
         onProgress(100)
         resolve()
       }
     })
-    
-    // Progress estimation
+
+    // Progress estimation (asr doesn't provide real-time progress)
     let progress = 0
     const interval = setInterval(() => {
       if (progress < 95) {
@@ -947,7 +1042,7 @@ async function flashWithSudo(imagePath, targetDevice, onProgress) {
         onProgress(progress)
       }
     }, 1000)
-    
+
     // Clear interval after typical flash time (will be overwritten by actual completion)
     setTimeout(() => clearInterval(interval), 300000) // 5 min max
   })
@@ -1216,7 +1311,9 @@ if (app.isPackaged) {
   })
 
   autoUpdater.on('update-downloaded', (info) => {
-    logEvent('Update', 'Update downloaded', { version: info?.version })
+    logEvent('Update', 'Update downloaded', { version: info?.version, path: info?.path })
+    // Store update info for manual installation (needed for ad-hoc signed apps)
+    downloadedUpdateInfo = info
     if (mainWindow) {
       mainWindow.setProgressBar(-1)
       mainWindow.webContents.send('update-downloaded', { version: info?.version })
@@ -1259,23 +1356,182 @@ ipcMain.handle('get-app-version', () => {
   return app.getVersion()
 })
 
+// Manual update installation for ad-hoc signed apps (bypasses signature verification)
+async function installUpdateManually(updateInfo) {
+  if (process.platform !== 'darwin') {
+    // For non-macOS, use standard method
+    autoUpdater.quitAndInstall(false, true)
+    return
+  }
+
+  try {
+    logEvent('Update', 'Starting manual installation', { version: updateInfo?.version, updateInfo })
+    
+    // Get the downloaded update path
+    // electron-updater stores updates in ~/Library/Caches/app.palpable.imager.ShipIt/update.{random}/
+    let updatePath = updateInfo?.path || updateInfo?.downloadPath || updateInfo?.cacheDir
+    
+    // If path not provided, try to find it in the ShipIt cache
+    if (!updatePath || !fs.existsSync(updatePath)) {
+      const cacheDir = path.join(app.getPath('userData'), '..', 'Caches', 'app.palpable.imager.ShipIt')
+      if (fs.existsSync(cacheDir)) {
+        const entries = fs.readdirSync(cacheDir)
+        const updateDirs = entries.filter(e => e.startsWith('update.'))
+        if (updateDirs.length > 0) {
+          // Use the most recent update directory
+          updateDirs.sort().reverse()
+          updatePath = path.join(cacheDir, updateDirs[0])
+          logEvent('Update', 'Found update in cache', { updatePath })
+        }
+      }
+    }
+    
+    if (!updatePath || !fs.existsSync(updatePath)) {
+      throw new Error('Update path not found. Please try downloading the update again.')
+    }
+
+    logEvent('Update', 'Update path', { updatePath })
+
+    // Find the actual .app bundle in the update directory
+    let updateAppPath = null
+    
+    // Check if updatePath is already the .app
+    if (updatePath.endsWith('.app') && fs.existsSync(updatePath)) {
+      updateAppPath = updatePath
+    } else {
+      // Search for .app in the directory
+      function findAppBundle(dir, depth = 0) {
+        if (depth > 3) return null // Limit search depth
+        
+        try {
+          const entries = fs.readdirSync(dir)
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry)
+            const stat = fs.statSync(fullPath)
+            
+            if (entry.endsWith('.app') && stat.isDirectory()) {
+              return fullPath
+            }
+            
+            if (stat.isDirectory() && !entry.startsWith('.')) {
+              const found = findAppBundle(fullPath, depth + 1)
+              if (found) return found
+            }
+          }
+        } catch (err) {
+          // Ignore errors
+        }
+        return null
+      }
+      
+      updateAppPath = findAppBundle(updatePath)
+    }
+    
+    if (!updateAppPath || !fs.existsSync(updateAppPath)) {
+      throw new Error('Could not find .app bundle in update. The update may be corrupted.')
+    }
+
+    logEvent('Update', 'Found update app bundle', { updateAppPath })
+
+    // Get current app path
+    const currentAppPath = app.getPath('exe')
+    const currentAppDir = path.dirname(currentAppPath)
+    const currentAppName = path.basename(currentAppPath, '.app')
+    
+    // Escape paths for shell script
+    const escapePath = (p) => p.replace(/'/g, "'\"'\"'")
+    const escapedUpdateApp = escapePath(updateAppPath)
+    const escapedCurrentDir = escapePath(currentAppDir)
+    const escapedAppName = escapePath(currentAppName)
+
+    // Create installation script
+    const scriptPath = path.join(app.getPath('temp'), `install-update-${Date.now()}.sh`)
+    const script = `#!/bin/bash
+set -e
+
+# Wait for app to quit
+sleep 2
+
+# Remove quarantine attribute from update
+xattr -cr '${escapedUpdateApp}' || true
+
+# Determine installation location
+INSTALL_DIR=""
+INSTALL_PATH=""
+
+# Try Applications folder first
+if [ -d "/Applications" ]; then
+  INSTALL_DIR="/Applications"
+  INSTALL_PATH="/Applications/Palpable-Imager.app"
+else
+  # Fall back to current location
+  INSTALL_DIR='${escapedCurrentDir}'
+  INSTALL_PATH="'${escapedCurrentDir}'/'${escapedAppName}'.app"
+fi
+
+# Remove old app if it exists
+if [ -d "$INSTALL_PATH" ]; then
+  rm -rf "$INSTALL_PATH"
+fi
+
+# Copy update to installation location
+cp -R '${escapedUpdateApp}' "$INSTALL_PATH"
+
+# Remove quarantine from installed app
+xattr -cr "$INSTALL_PATH" 2>/dev/null || true
+
+# Open the app
+open "$INSTALL_PATH" 2>/dev/null || true
+
+# Clean up script
+rm -f '${scriptPath}'
+`
+
+    fs.writeFileSync(scriptPath, script)
+    fs.chmodSync(scriptPath, '755')
+
+    logEvent('Update', 'Created installation script', { scriptPath })
+
+    // Execute script in background and quit
+    spawn('bash', [scriptPath], {
+      detached: true,
+      stdio: 'ignore'
+    }).unref()
+
+    // Give script a moment to start
+    setTimeout(() => {
+      app.quit()
+    }, 500)
+
+  } catch (err) {
+    logEvent('Update', 'Manual installation failed', { error: err.message, stack: err.stack })
+    throw err
+  }
+}
+
 // Restart and install update
-ipcMain.handle('restart-and-install', () => {
+ipcMain.handle('restart-and-install', async () => {
   if (app.isPackaged) {
     try {
-      // For unsigned/ad-hoc signed apps, we need to handle installation differently
-      // quitAndInstall will attempt to verify signatures which fails for ad-hoc signed apps
-      if (process.platform === 'darwin') {
-        // On macOS, try to install without strict signature verification
-        // The update should already be downloaded and ready
-        autoUpdater.quitAndInstall(false, true) // isSilent=false, isForceRunAfter=true
+      // For ad-hoc signed apps on macOS, use manual installation to bypass signature verification
+      if (process.platform === 'darwin' && downloadedUpdateInfo) {
+        logEvent('Update', 'Using manual installation for ad-hoc signed app')
+        await installUpdateManually(downloadedUpdateInfo)
       } else {
-        autoUpdater.quitAndInstall(false, true)
+        // For properly signed apps or other platforms, use standard method
+        autoUpdater.quitAndInstall(false, true) // isSilent=false, isForceRunAfter=true
       }
     } catch (err) {
       console.error('Failed to restart and install:', err)
-      // If quitAndInstall fails, try to manually handle the update
       logEvent('Update', 'Restart failed', { error: err.message })
+      
+      // Show error to user
+      if (mainWindow) {
+        dialog.showErrorBox(
+          'Update Installation Failed',
+          `Failed to install update: ${err.message}\n\nPlease download and install the update manually from GitHub releases.`
+        )
+      }
     }
   }
 })
