@@ -398,6 +398,18 @@ ipcMain.handle('list-drives', async () => {
         // PREFER: Drives explicitly marked as SD cards
         if (drive.isCard) return true
 
+        // ALLOW: Card readers (including Apple SDXC readers)
+        // These might not be marked as USB or Card by drivelist
+        if (description.includes('card reader') ||
+            description.includes('sdxc') ||
+            description.includes('sd card') ||
+            description.includes('mmc')) {
+          // Must have valid device path
+          if (device.match(/^\/dev\/disk\d+$/)) {
+            return true
+          }
+        }
+
         // ALLOW: USB drives that could be SD card readers
         // Must be USB, removable, and have correct device pattern
         if (drive.isUSB) {
