@@ -122,6 +122,35 @@ function createApplicationMenu() {
       ]
     },
 
+    // Account Menu
+    {
+      label: 'Account',
+      submenu: [
+        {
+          label: 'Sign Out',
+          click: async () => {
+            const { response } = await dialog.showMessageBox(mainWindow, {
+              type: 'question',
+              title: 'Sign Out',
+              message: 'Are you sure you want to sign out?',
+              detail: 'You will need to sign in again to manage your devices.',
+              buttons: ['Sign Out', 'Cancel'],
+              defaultId: 1,
+              cancelId: 1
+            })
+            if (response === 0) {
+              store.delete('authToken')
+              store.delete('refreshToken')
+              store.delete('userId')
+              if (mainWindow) {
+                mainWindow.webContents.send('auth-logout')
+              }
+            }
+          }
+        }
+      ]
+    },
+
     // Edit Menu
     {
       label: 'Edit',
@@ -303,13 +332,18 @@ function handleAuthCallback(url) {
     const urlObj = new URL(url)
     const token = urlObj.searchParams.get('token')
     const userId = urlObj.searchParams.get('userId')
+    const refreshToken = urlObj.searchParams.get('refreshToken')
 
     console.log('[Auth] Parsed token:', token ? 'present' : 'missing')
     console.log('[Auth] Parsed userId:', userId || 'missing')
+    console.log('[Auth] Parsed refreshToken:', refreshToken ? 'present' : 'missing')
 
     if (token && userId) {
       store.set('authToken', token)
       store.set('userId', userId)
+      if (refreshToken) {
+        store.set('refreshToken', refreshToken)
+      }
       console.log('[Auth] Credentials stored successfully')
 
       if (mainWindow) {
@@ -327,6 +361,67 @@ function handleAuthCallback(url) {
   } catch (err) {
     console.error('[Auth] Failed to parse auth callback:', err)
   }
+}
+
+// Refresh access token using refresh token
+async function refreshAccessToken() {
+  const refreshToken = store.get('refreshToken')
+  if (!refreshToken) {
+    console.log('[Auth] No refresh token available')
+    return null
+  }
+
+  try {
+    console.log('[Auth] Attempting to refresh access token...')
+    const response = await got.post(`${PALPABLE_API_URL}/auth/refresh`, {
+      json: { refreshToken },
+      responseType: 'json'
+    })
+
+    const { accessToken, refreshToken: newRefreshToken } = response.body
+
+    if (accessToken) {
+      store.set('authToken', accessToken)
+      if (newRefreshToken) {
+        store.set('refreshToken', newRefreshToken)
+      }
+      console.log('[Auth] Token refreshed successfully')
+      return accessToken
+    }
+  } catch (err) {
+    console.error('[Auth] Failed to refresh token:', err.message)
+    // If refresh fails with 401, clear all auth data
+    if (err.response?.statusCode === 401) {
+      store.delete('authToken')
+      store.delete('refreshToken')
+      store.delete('userId')
+    }
+  }
+  return null
+}
+
+// Get valid auth token, refreshing if needed
+async function getValidToken() {
+  const token = store.get('authToken')
+  if (!token) return null
+
+  // Check if token is expired (JWT exp claim)
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString())
+    const expiresAt = payload.exp * 1000 // Convert to milliseconds
+    const now = Date.now()
+
+    // If token expires in less than 5 minutes, refresh it
+    if (expiresAt - now < 5 * 60 * 1000) {
+      console.log('[Auth] Token expiring soon, attempting refresh...')
+      const newToken = await refreshAccessToken()
+      return newToken || token // Return old token if refresh fails
+    }
+  } catch (err) {
+    console.error('[Auth] Error checking token expiration:', err)
+  }
+
+  return token
 }
 
 // ============================================
@@ -352,6 +447,7 @@ ipcMain.handle('start-auth', () => {
 // Logout
 ipcMain.handle('logout', () => {
   store.delete('authToken')
+  store.delete('refreshToken')
   store.delete('userId')
   return { success: true }
 })
@@ -1016,8 +1112,12 @@ async function flashWithSudo(imagePath, targetDevice, onProgress) {
 
     const options = { name: 'Palpable Imager' }
 
+    console.log('[Flash] Running sudo command:', command)
     sudo.exec(command, options, (error, stdout, stderr) => {
       if (error) {
+        console.error('[Flash] sudo error:', error)
+        console.error('[Flash] stdout:', stdout)
+        console.error('[Flash] stderr:', stderr)
         const errorOutput = stderr || stdout || error.message || 'Flash failed'
 
         // Try to remount the disk on error (prevents auto-eject)
@@ -1073,7 +1173,7 @@ async function flashWithSudo(imagePath, targetDevice, onProgress) {
       }
     })
 
-    // Progress estimation (asr doesn't provide real-time progress)
+    // Progress estimation
     let progress = 0
     const interval = setInterval(() => {
       if (progress < 95) {
@@ -1090,20 +1190,47 @@ async function flashWithSudo(imagePath, targetDevice, onProgress) {
 // Get user's devices
 ipcMain.handle('get-devices', async () => {
   try {
-    const token = store.get('authToken')
-    
+    let token = await getValidToken()
+
     if (!token) {
       return { success: false, devices: [] }
     }
-    
-    const response = await got.get(`${PALPABLE_API_URL}/devices`, {
-      headers: { Authorization: `Bearer ${token}` },
-      responseType: 'json'
-    })
-    
-    return { 
-      success: true, 
-      devices: response.body.devices || []
+
+    try {
+      const response = await got.get(`${PALPABLE_API_URL}/devices`, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'json'
+      })
+
+      return {
+        success: true,
+        devices: response.body.devices || []
+      }
+    } catch (err) {
+      // If 401, try refreshing the token and retry once
+      if (err.response?.statusCode === 401) {
+        console.log('[Auth] Got 401, attempting token refresh...')
+        const newToken = await refreshAccessToken()
+        if (newToken) {
+          const response = await got.get(`${PALPABLE_API_URL}/devices`, {
+            headers: { Authorization: `Bearer ${newToken}` },
+            responseType: 'json'
+          })
+          return {
+            success: true,
+            devices: response.body.devices || []
+          }
+        } else {
+          // Refresh failed - notify renderer to prompt re-auth
+          if (mainWindow) {
+            mainWindow.webContents.send('reauth-required', {
+              reason: 'Your session has expired. Please sign in again to continue.'
+            })
+          }
+          return { success: false, devices: [], error: 'Session expired', requiresReauth: true }
+        }
+      }
+      throw err
     }
   } catch (err) {
     console.error('Failed to get devices:', err)
@@ -1114,20 +1241,20 @@ ipcMain.handle('get-devices', async () => {
 // Update device
 ipcMain.handle('update-device', async (event, { deviceId, name, location, status }) => {
   try {
-    const token = store.get('authToken')
-    
+    const token = await getValidToken()
+
     if (!token) {
       return { success: false, error: 'Not authenticated' }
     }
-    
+
     const response = await got.patch(`${PALPABLE_API_URL}/devices/${deviceId}`, {
       json: { name, location, status },
       headers: { Authorization: `Bearer ${token}` },
       responseType: 'json'
     })
-    
-    return { 
-      success: true, 
+
+    return {
+      success: true,
       device: response.body.device
     }
   } catch (err) {
@@ -1140,18 +1267,18 @@ ipcMain.handle('update-device', async (event, { deviceId, name, location, status
 // Delete device
 ipcMain.handle('delete-device', async (event, { deviceId }) => {
   try {
-    const token = store.get('authToken')
-    
+    const token = await getValidToken()
+
     if (!token) {
       return { success: false, error: 'Not authenticated' }
     }
-    
+
     const response = await got.delete(`${PALPABLE_API_URL}/devices/${deviceId}`, {
       headers: { Authorization: `Bearer ${token}` },
       responseType: 'json'
     })
-    
-    return { 
+
+    return {
       success: true
     }
   } catch (err) {
@@ -1164,21 +1291,21 @@ ipcMain.handle('delete-device', async (event, { deviceId }) => {
 // Register device with Palpable account (or re-flash existing)
 ipcMain.handle('register-device', async (event, { deviceName, deviceId }) => {
   try {
-    const token = store.get('authToken')
+    const token = await getValidToken()
     const userId = store.get('userId')
-    
+
     if (!token || !userId) {
       return { success: false, error: 'Not authenticated' }
     }
-    
+
     const response = await got.post(`${PALPABLE_API_URL}/devices/register`, {
       json: { deviceName, userId, deviceId },
       headers: { Authorization: `Bearer ${token}` },
       responseType: 'json'
     })
-    
-    return { 
-      success: true, 
+
+    return {
+      success: true,
       deviceId: response.body.deviceId,
       pairingCode: response.body.pairingCode
     }
@@ -1191,17 +1318,17 @@ ipcMain.handle('register-device', async (event, { deviceName, deviceId }) => {
 // Get user's saved WiFi networks
 ipcMain.handle('get-wifi-networks', async () => {
   try {
-    const token = store.get('authToken')
-    
+    const token = await getValidToken()
+
     if (!token) {
       return { success: false, networks: [] }
     }
-    
+
     const response = await got.get(`${PALPABLE_API_URL}/wifi`, {
       headers: { Authorization: `Bearer ${token}` },
       responseType: 'json'
     })
-    
+
     return { success: true, networks: response.body.networks }
   } catch (err) {
     console.error('Failed to get WiFi networks:', err)
@@ -1391,8 +1518,7 @@ if (app.isPackaged) {
       lastUpdateError = errorMessage
       lastUpdateErrorTime = now
 
-      // For other errors, show to user
-      dialog.showErrorBox('Update Error', errorMessage)
+      // Send to renderer to show in UI (don't show native dialog - that creates doubles)
       mainWindow.webContents.send('update-error', { message: errorMessage })
     }
   })

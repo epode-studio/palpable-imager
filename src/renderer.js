@@ -80,7 +80,20 @@ function setupEventListeners() {
   // Listen for auth success from main process
   window.palpable.onAuthSuccess((data) => {
     isPairingCodeAuth = false
+    hideReauthBanner()
     showMainScreen()
+  })
+
+  // Listen for logout from menu
+  window.palpable.onAuthLogout(() => {
+    isPairingCodeAuth = false
+    deviceId = null
+    showAuthScreen()
+  })
+
+  // Listen for re-auth required (expired session)
+  window.palpable.onReauthRequired((data) => {
+    showReauthBanner(data.reason)
   })
 
   // Pairing Code Auth (Alternative)
@@ -174,7 +187,46 @@ function showScreen(screen) {
 }
 
 function showAuthScreen() {
+  hideReauthBanner()
   showScreen(authScreen)
+}
+
+// Re-authentication banner for expired sessions
+function showReauthBanner(message) {
+  let banner = document.getElementById('reauth-banner')
+  if (!banner) {
+    banner = document.createElement('div')
+    banner.id = 'reauth-banner'
+    banner.className = 'reauth-banner'
+    banner.innerHTML = `
+      <div class="reauth-content">
+        <span class="reauth-icon">⚠️</span>
+        <span class="reauth-message"></span>
+        <button class="reauth-btn" id="reauth-signin-btn">Sign In Again</button>
+        <button class="reauth-dismiss" id="reauth-dismiss-btn">×</button>
+      </div>
+    `
+    document.body.insertBefore(banner, document.body.firstChild)
+
+    document.getElementById('reauth-signin-btn').addEventListener('click', () => {
+      hideReauthBanner()
+      handleLogout() // Clear old credentials and show auth screen
+    })
+
+    document.getElementById('reauth-dismiss-btn').addEventListener('click', () => {
+      hideReauthBanner()
+    })
+  }
+
+  banner.querySelector('.reauth-message').textContent = message || 'Your session has expired. Please sign in again.'
+  banner.classList.add('visible')
+}
+
+function hideReauthBanner() {
+  const banner = document.getElementById('reauth-banner')
+  if (banner) {
+    banner.classList.remove('visible')
+  }
 }
 
 async function showMainScreen() {
@@ -633,6 +685,7 @@ async function handleFlash() {
   
   flashBtn.disabled = true
   progressContainer.classList.remove('hidden')
+  progressContainer.scrollIntoView({ behavior: 'smooth', block: 'end' })
   
   try {
     // Step 1: Register device (skip if already authenticated via pairing code)

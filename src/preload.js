@@ -9,6 +9,12 @@ contextBridge.exposeInMainWorld('palpable', {
   onAuthSuccess: (callback) => {
     ipcRenderer.on('auth-success', (event, data) => callback(data))
   },
+  onAuthLogout: (callback) => {
+    ipcRenderer.on('auth-logout', () => callback())
+  },
+  onReauthRequired: (callback) => {
+    ipcRenderer.on('reauth-required', (event, data) => callback(data))
+  },
   
   // Pairing Code Auth (Alternative to Browser OAuth)
   validatePairingCode: (pairingCode) => ipcRenderer.invoke('validate-pairing-code', { pairingCode }),
