@@ -798,6 +798,32 @@ body {
   font-weight: 500;
 }
 
+.next-steps a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.next-steps a:hover {
+  text-decoration: underline;
+}
+
+.next-steps-note {
+  margin-top: 16px;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.next-steps-note code {
+  background: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
 /* Update Modal */
 .update-modal-description {
   color: var(--text-secondary);

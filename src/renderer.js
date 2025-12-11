@@ -681,7 +681,15 @@ function updateFlashButtonState() {
 
 // Flashing
 async function handleFlash() {
-  if (!selectedDrive || !deviceNameInput.value.trim()) return
+  // Validate based on device mode
+  const hasValidName = deviceMode === 'existing'
+    ? (deviceId !== null)
+    : (deviceNameInput.value.trim().length > 0)
+
+  if (!selectedDrive || !hasValidName) return
+
+  // Capture selectedDrive at start to prevent race conditions
+  const targetDrive = selectedDrive
   
   flashBtn.disabled = true
   progressContainer.classList.remove('hidden')
@@ -730,9 +738,17 @@ async function handleFlash() {
     // Step 3: Flash to drive
     progressStatus.textContent = 'Flashing to SD card...'
     
+    // Get device name for config
+    const deviceName = deviceMode === 'existing'
+      ? existingDevices.find(d => d.id === deviceId)?.name || 'Palpable Device'
+      : deviceNameInput.value.trim()
+
     const flashResult = await window.palpable.flashImage({
       imagePath: downloadedImagePath,
-      targetDevice: selectedDrive
+      targetDevice: targetDrive,
+      deviceId,
+      deviceName,
+      pairingCode
     })
     
     if (!flashResult.success) {

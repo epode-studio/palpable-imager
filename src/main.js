@@ -851,9 +851,17 @@ ipcMain.handle('download-image', async (event) => {
 })
 
 // Flash image to drive
-ipcMain.handle('flash-image', async (event, { imagePath, targetDevice }) => {
+ipcMain.handle('flash-image', async (event, { imagePath, targetDevice, deviceId, deviceName, pairingCode }) => {
   try {
-    logEvent('Flash', 'Flash start', { targetDevice, imagePath })
+    // Validate required parameters
+    if (!targetDevice) {
+      return { success: false, error: 'No target drive selected. Please select a drive and try again.' }
+    }
+    if (!imagePath) {
+      return { success: false, error: 'No image path provided. Please try again.' }
+    }
+
+    logEvent('Flash', 'Flash start', { targetDevice, imagePath, deviceId })
     // Confirm with user
     const { response } = await dialog.showMessageBox(mainWindow, {
       type: 'warning',
@@ -925,14 +933,27 @@ ipcMain.handle('flash-image', async (event, { imagePath, targetDevice }) => {
       mainWindow.setProgressBar((30 + Math.round(percent * 0.7)) / 100)
     })
     
+    mainWindow.webContents.send('flash-progress', { percent: 95, status: 'configuring' })
+
+    // Write device config to boot partition (after flash remounts)
+    if (deviceId) {
+      try {
+        await writeDeviceConfig(targetDevice, { deviceId, deviceName, pairingCode })
+        logEvent('Flash', 'Device config written', { deviceId })
+      } catch (configErr) {
+        console.warn('Failed to write device config:', configErr)
+        // Don't fail the flash, just warn - user can add config manually
+      }
+    }
+
     mainWindow.webContents.send('flash-progress', { percent: 100, status: 'complete' })
     mainWindow.setProgressBar(-1)
-    
+
     // Clean up decompressed image
     if (rawImagePath !== imagePath && fs.existsSync(rawImagePath)) {
       fs.unlinkSync(rawImagePath)
     }
-    
+
     logEvent('Flash', 'Flash complete', { targetDevice })
     return { success: true }
   } catch (err) {
@@ -1063,6 +1084,107 @@ async function decompressXZ(inputPath, outputPath, onProgress) {
   })
 }
 
+// Write device config to boot partition after flashing
+async function writeDeviceConfig(targetDevice, { deviceId, deviceName, pairingCode }) {
+  const platform = process.platform
+
+  if (platform === 'darwin') {
+    // macOS: remount the disk and find the boot partition
+    const { execSync, spawn } = require('child_process')
+
+    // Get the base disk (e.g., /dev/disk2 from /dev/disk2s1)
+    const baseDisk = targetDevice.replace(/s\d+$/, '')
+
+    // Mount the disk
+    console.log('[Config] Mounting disk:', baseDisk)
+    try {
+      execSync(`diskutil mountDisk ${baseDisk}`, { timeout: 30000 })
+    } catch (err) {
+      console.warn('[Config] Mount attempt:', err.message)
+    }
+
+    // Wait for mount and find the boot partition
+    let bootPath = null
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setTimeout(resolve, 1000))
+
+      // Check common boot partition names
+      const possiblePaths = [
+        '/Volumes/NO NAME',
+        '/Volumes/boot',
+        '/Volumes/bootfs',
+        '/Volumes/BOOT'
+      ]
+
+      for (const p of possiblePaths) {
+        if (fs.existsSync(p) && fs.existsSync(path.join(p, 'config.txt'))) {
+          bootPath = p
+          break
+        }
+      }
+
+      if (bootPath) break
+    }
+
+    if (!bootPath) {
+      throw new Error('Could not find boot partition after flashing')
+    }
+
+    // Write device config
+    const configPath = path.join(bootPath, 'palpable-device.json')
+    const userId = store.get('userId')
+
+    const config = {
+      deviceId,
+      deviceName: deviceName || 'Palpable Device',
+      userId,
+      apiKey: pairingCode || null,
+      createdAt: new Date().toISOString()
+    }
+
+    console.log('[Config] Writing config to:', configPath)
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2))
+
+    console.log('[Config] Device config written successfully')
+
+  } else if (platform === 'linux') {
+    // Linux: similar approach, mount and write
+    const { execSync } = require('child_process')
+
+    // Try to mount the first partition
+    const partition = targetDevice + '1'
+    const mountPoint = '/tmp/palpable-boot'
+
+    try {
+      execSync(`mkdir -p ${mountPoint}`)
+      execSync(`mount ${partition} ${mountPoint}`)
+
+      const configPath = path.join(mountPoint, 'palpable-device.json')
+      const userId = store.get('userId')
+
+      const config = {
+        deviceId,
+        deviceName: deviceName || 'Palpable Device',
+        userId,
+        apiKey: pairingCode || null,
+        createdAt: new Date().toISOString()
+      }
+
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2))
+      execSync(`umount ${mountPoint}`)
+      console.log('[Config] Device config written successfully')
+    } catch (err) {
+      console.warn('[Config] Linux config write failed:', err.message)
+      throw err
+    }
+
+  } else if (platform === 'win32') {
+    // Windows: the partition should auto-mount, find the drive letter
+    // This is more complex - for now, skip on Windows
+    console.warn('[Config] Windows config writing not yet implemented')
+  }
+}
+
 // Flash image with sudo
 async function flashWithSudo(imagePath, targetDevice, onProgress) {
   return new Promise((resolve, reject) => {
@@ -1076,10 +1198,17 @@ async function flashWithSudo(imagePath, targetDevice, onProgress) {
       device = device.replace(/s\d+$/, '')
       const rawDevice = device.replace('/dev/disk', '/dev/rdisk')
 
-      // Use dd for raw disk images (like Raspberry Pi/Palpable OS images)
-      // These images contain partition tables, so we need to write to the raw device
-      // Using rdisk (raw device) is significantly faster than disk (buffered)
+      // Use sudo-prompt which creates a proper privileged helper
+      // This is the most reliable method for macOS disk writes
       command = `diskutil unmountDisk ${device} && dd if="${imagePath}" of=${rawDevice} bs=1m conv=sync status=none`
+
+      console.log('[Flash] Using sudo-prompt for macOS')
+      // Fall through to use sudo-prompt below
+    } else if (platform === 'darwin_osascript_broken') {
+      // osascript approach - doesn't work due to macOS security restrictions
+      device = device.replace(/s\d+$/, '')
+      const ddCommand = `diskutil unmountDisk ${device} && dd if=\\"${imagePath}\\" of=${device} bs=1m`
+      command = `osascript -e 'do shell script "${ddCommand}" with administrator privileges'`
     } else if (platform === 'linux') {
       // Strip partition suffix (e.g., /dev/sdb1 -> /dev/sdb)
       device = device.replace(/p?\d+$/, '')
