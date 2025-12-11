@@ -959,10 +959,12 @@ async function flashWithSudo(imagePath, targetDevice, onProgress) {
     if (platform === 'darwin') {
       // Strip partition suffix (e.g., disk2s1 -> disk2)
       device = device.replace(/s\d+$/, '')
+      const rawDevice = device.replace('/dev/disk', '/dev/rdisk')
 
-      // Use Apple Software Restore (asr) - native macOS tool
-      // More reliable and better integrated with macOS security
-      command = `diskutil unmountDisk ${device} && asr restore --source "${imagePath}" --target ${device} --erase --noprompt`
+      // Use dd for raw disk images (like Raspberry Pi/Palpable OS images)
+      // These images contain partition tables, so we need to write to the raw device
+      // Using rdisk (raw device) is significantly faster than disk (buffered)
+      command = `diskutil unmountDisk ${device} && dd if="${imagePath}" of=${rawDevice} bs=1m conv=sync status=none`
     } else if (platform === 'linux') {
       // Strip partition suffix (e.g., /dev/sdb1 -> /dev/sdb)
       device = device.replace(/p?\d+$/, '')
