@@ -33,6 +33,8 @@ const PALPABLE_API_URL = 'https://palpable.technology/api'
 let mainWindow = null
 let authWindow = null
 let downloadedUpdateInfo = null // Store update info for manual installation
+let lastUpdateError = null // Track last update error to prevent duplicates
+let lastUpdateErrorTime = 0 // Timestamp of last error
 
 // Custom protocol for OAuth callback
 const PROTOCOL = 'palpable-imager'
@@ -456,19 +458,36 @@ ipcMain.handle('list-drives', async () => {
     }).map(drive => {
       // Try to get a friendly name from mountpoints (what Finder shows)
       let displayName = drive.description
+      let volumeLabel = ''
 
       if (drive.mountpoints && drive.mountpoints.length > 0) {
         // Get the first mountpoint's label if available
         const mountpoint = drive.mountpoints[0]
-        if (mountpoint.label) {
-          displayName = mountpoint.label
+        if (mountpoint.label && mountpoint.label.trim() !== '') {
+          volumeLabel = mountpoint.label.trim()
+          // For SD cards, prefer showing the volume label prominently
+          if (drive.isCard) {
+            displayName = volumeLabel
+          } else {
+            displayName = `${volumeLabel} (${drive.description})`
+          }
         } else if (mountpoint.path) {
           // Extract volume name from path (e.g., /Volumes/MY_SD_CARD -> MY_SD_CARD)
           const volumeName = path.basename(mountpoint.path)
           if (volumeName && volumeName !== '/' && !volumeName.startsWith('disk')) {
-            displayName = volumeName
+            volumeLabel = volumeName
+            if (drive.isCard) {
+              displayName = volumeName
+            } else {
+              displayName = `${volumeName} (${drive.description})`
+            }
           }
         }
+      }
+
+      // If no friendly name found but it's a card, at least indicate it's an SD card
+      if (drive.isCard && displayName === drive.description) {
+        displayName = 'SD Card'
       }
 
       return {
@@ -1001,6 +1020,11 @@ async function flashWithSudo(imagePath, targetDevice, onProgress) {
       if (error) {
         const errorOutput = stderr || stdout || error.message || 'Flash failed'
 
+        // Try to remount the disk on error (prevents auto-eject)
+        if (platform === 'darwin') {
+          spawn('diskutil', ['mountDisk', device], { detached: true, stdio: 'ignore' }).unref()
+        }
+
         // Detect permission errors and provide helpful guidance
         if (errorOutput.includes('Operation not permitted') ||
             errorOutput.includes('Permission denied') ||
@@ -1011,12 +1035,16 @@ async function flashWithSudo(imagePath, targetDevice, onProgress) {
           let permissionMessage = ''
 
           if (platform === 'darwin') {
+            // Open System Settings directly to Full Disk Access
+            shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles')
+
             permissionMessage = 'Permission denied: Palpable Imager needs Full Disk Access to flash SD cards.\n\n' +
+              'System Settings has been opened for you.\n\n' +
               'To fix this:\n' +
-              '1. Open System Settings\n' +
-              '2. Go to Privacy & Security → Full Disk Access\n' +
-              '3. Click the lock icon and authenticate\n' +
-              '4. Click the + button and add Palpable Imager\n' +
+              '1. Click the lock icon and authenticate\n' +
+              '2. Click the + button\n' +
+              '3. Navigate to and select Palpable Imager\n' +
+              '4. Enable the checkbox next to it\n' +
               '5. Restart Palpable Imager\n\n' +
               'Then try flashing again.'
           } else if (platform === 'win32') {
@@ -1351,9 +1379,21 @@ if (app.isPackaged) {
         return
       }
 
+      // Prevent duplicate error popups (only show once per 60 seconds)
+      const now = Date.now()
+      const errorMessage = err.message || 'Unknown error'
+      if (lastUpdateError === errorMessage && (now - lastUpdateErrorTime) < 60000) {
+        logEvent('Update', 'Duplicate error suppressed', { message: errorMessage })
+        return
+      }
+
+      // Track this error
+      lastUpdateError = errorMessage
+      lastUpdateErrorTime = now
+
       // For other errors, show to user
-      dialog.showErrorBox('Update Error', err.message)
-      mainWindow.webContents.send('update-error', { message: err.message })
+      dialog.showErrorBox('Update Error', errorMessage)
+      mainWindow.webContents.send('update-error', { message: errorMessage })
     }
   })
 }
