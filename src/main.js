@@ -1200,14 +1200,14 @@ async function flashWithSudo(imagePath, targetDevice, onProgress) {
 
       // Use sudo-prompt which creates a proper privileged helper
       // This is the most reliable method for macOS disk writes
-      command = `diskutil unmountDisk ${device} && dd if="${imagePath}" of=${rawDevice} bs=1m conv=sync status=none`
+      command = `diskutil unmountDisk force ${device} && dd if="${imagePath}" of=${rawDevice} bs=1m conv=sync status=none`
 
       console.log('[Flash] Using sudo-prompt for macOS')
       // Fall through to use sudo-prompt below
     } else if (platform === 'darwin_osascript_broken') {
       // osascript approach - doesn't work due to macOS security restrictions
       device = device.replace(/s\d+$/, '')
-      const ddCommand = `diskutil unmountDisk ${device} && dd if=\\"${imagePath}\\" of=${device} bs=1m`
+      const ddCommand = `diskutil unmountDisk force ${device} && dd if=\\"${imagePath}\\" of=${device} bs=1m`
       command = `osascript -e 'do shell script "${ddCommand}" with administrator privileges'`
     } else if (platform === 'linux') {
       // Strip partition suffix (e.g., /dev/sdb1 -> /dev/sdb)
@@ -1442,6 +1442,18 @@ ipcMain.handle('register-device', async (event, { deviceName, deviceId }) => {
     console.error('Failed to register device:', err)
     return { success: false, error: err.message }
   }
+    // Verify Shadow Agent is warming up
+    try {
+      for (let i = 0; i < 5; i++) {
+        const statusRes = await got.get(`${PALPABLE_API_URL}/agent/status?deviceId=${response.body.deviceId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          responseType: "json"
+        });
+        if (statusRes.body.status === "running") break;
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    } catch (e) { /* Non-blocking verification */ }
+
 })
 
 // Get user's saved WiFi networks
